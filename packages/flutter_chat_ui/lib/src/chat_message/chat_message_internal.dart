@@ -87,6 +87,18 @@ class _ChatMessageInternalState extends State<ChatMessageInternal> {
   }
 
   @override
+  void didUpdateWidget(covariant ChatMessageInternal oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Celsius fork: the list applies non-animated change/move updates by
+    // rebuilding this widget with the new message data. Sync the locally
+    // cached copy, which is otherwise only refreshed by
+    // ChatOperationType.update events on the operations stream.
+    if (widget.message != oldWidget.message) {
+      _updatedMessage = widget.message;
+    }
+  }
+
+  @override
   void dispose() {
     _operationsSubscription?.cancel();
     super.dispose();

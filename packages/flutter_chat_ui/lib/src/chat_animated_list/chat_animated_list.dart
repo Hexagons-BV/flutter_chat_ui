@@ -1203,56 +1203,33 @@ class _ChatAnimatedListState extends State<ChatAnimatedList>
     Message newData,
     bool animated,
   ) {
-    _onRemoved(position, oldData, animated);
-    _onInserted(position, newData, animated);
+    // Celsius fork: swap the message in place instead of a removeItem +
+    // insertItem pair. The pair briefly mounts two widgets with the same
+    // ValueKey(message.id) (the removal "ghost" plus the replacement), and
+    // duplicate keys corrupt SliverMultiBoxAdaptorElement's child bookkeeping
+    // in release builds (https://github.com/flutter/flutter/issues/153922),
+    // leaving the list permanently broken (every touch throws during hit
+    // testing). Item count and indices are unchanged by an in-place swap, so
+    // a plain rebuild is sufficient; the change is just not animated.
+    setState(() {
+      _oldList[position] = newData;
+    });
   }
 
   /// Handles a `Move` operation as identified by `diffutil.calculateDiff`.
-  /// A move operation is treated as a removal from the `oldPos` followed by an
-  /// insertion at an adjusted `newPos`.
   ///
-  /// Parameters from `diffutil.DataMove<Message>`:
-  ///  - `oldPos`: The original index of the item in `_oldList` before any
-  ///    operations from the current diff batch have been applied.
-  ///  - `newPos`: The target index for the item in the list *after* it has been
-  ///    notionally removed from `oldPos` (and other preceding removals in the
-  ///    batch might have occurred, though this method only considers the local
-  ///    effect of its own `_onRemoved` call when adjusting `newPos`).
-  ///    `diffutil_dart` seems to provide `newPos` as the target index in the list
-  ///    state if the item at `oldPos` was the only one removed.
-  ///  - `data`: The message data being moved.
-  ///  - `animated`: Whether the operation should be animated.
-  ///
-  /// The method first calls `_onRemoved` using `oldPos`. Then, it uses `newPos`
-  /// (clamped to valid list bounds) as the `insertionPos` for the subsequent
-  /// `_onInserted` call. This sequence correctly updates `_oldList` and drives
-  /// the `SliverAnimatedList` removal and insertion animations to visually
-  /// represent the move.
+  /// `newPosition` is the target index in the list state *after* the item at
+  /// `oldPosition` has been removed (diffutil_dart semantics).
   void _onMove(int oldPosition, int newPosition, Message data, bool animated) {
-    // 1. Perform the removal part of the move.
-    // This removes the item from _oldList at oldPos and triggers removeItem animation.
-    _onRemoved(oldPosition, data, animated);
-
-    // 2. Determine the insertion position.
-    // Based on testing, diffutil_dart's `newPos` for a Move operation appears
-    // to be the target index *after* the item at `oldPos` is removed.
-    // We use this `newPos` directly, after clamping it to the current list bounds.
-    var insertionPos = newPosition;
-
-    // Sanity check: Ensure insertionPos is within the bounds of _oldList,
-    // which has now shrunk by one item due to the preceding _onRemoved call.
-    // Valid insertion indices for _oldList.insert() are 0 to _oldList.length (inclusive).
-    if (_oldList.isNotEmpty) {
-      insertionPos = insertionPos.clamp(0, _oldList.length);
-    } else {
-      // If _oldList becomes empty after removal, the only valid insertion index is 0.
-      insertionPos = 0;
-    }
-
-    // 3. Perform the insertion part of the move.
-    // This inserts the item back into _oldList at the calculated insertionPos
-    // and triggers insertItem animation.
-    _onInserted(insertionPos, data, animated);
+    // Celsius fork: like _onChanged, a move must not go through removeItem +
+    // insertItem — the removal ghost would coexist with the reinserted item
+    // under the same ValueKey and corrupt the sliver's child bookkeeping. The
+    // item count is unchanged by a move, so reordering _oldList and rebuilding
+    // lets the keyed children reconcile safely (the move is just not animated).
+    setState(() {
+      _oldList.removeAt(oldPosition);
+      _oldList.insert(newPosition.clamp(0, _oldList.length), data);
+    });
   }
 
   /// Maps a conceptual item position from `_oldList` (content order) to its
@@ -1290,6 +1267,17 @@ class _ChatAnimatedListState extends State<ChatAnimatedList>
     // Safety to no process twice, should not really happen
     if (_isProcessingOperations) return;
     _isProcessingOperations = true;
+    // Celsius fork: try/finally so an exception thrown while applying an
+    // operation cannot leave _isProcessingOperations stuck at true, which
+    // would silently drop every subsequent chat operation.
+    try {
+      _drainOperationsQueue();
+    } finally {
+      _isProcessingOperations = false;
+    }
+  }
+
+  void _drainOperationsQueue() {
     while (_operationsQueue.isNotEmpty) {
       final ops = List.of(_operationsQueue);
       _operationsQueue.clear();
@@ -1346,14 +1334,21 @@ class _ChatAnimatedListState extends State<ChatAnimatedList>
             break;
           case ChatOperationType.update:
             assert(
-              op.index != null,
-              'Index must be provided when updating a message.',
+              op.message != null,
+              'Message must be provided when updating a message.',
             );
-            _oldList[op.index!] = op.message!;
+            // Celsius fork: locate by id instead of trusting op.index. A
+            // controller can compute the index against a message list state
+            // the UI has not applied yet (e.g. while a set snapshot is still
+            // pending), and writing at a stale index silently duplicates one
+            // message and drops another, which later corrupts the keyed list.
+            final index = _oldList.indexWhere((m) => m.id == op.message!.id);
+            if (index != -1) {
+              _oldList[index] = op.message!;
+            }
             break;
         }
       }
     }
-    _isProcessingOperations = false;
   }
 }
