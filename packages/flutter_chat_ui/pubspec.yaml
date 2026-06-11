@@ -10,7 +10,7 @@ environment:
   sdk: ">=3.8.0 <4.0.0"
   flutter: ">=3.32.0"
 
-resolution: workspace
+# resolution: workspace
 
 dependencies:
   cross_cache: ^1.1.0
